@@ -1,0 +1,6 @@
+streamlit
+google-genai
+google-cloud-vision
+pymupdf
+pillow
+opencc-python-reimplemented
