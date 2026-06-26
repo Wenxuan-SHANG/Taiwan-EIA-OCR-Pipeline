@@ -66,7 +66,9 @@ def extract_native_text(pdf_path: str) -> tuple[str, bool]:
 
 # ── 2. Gemini OCR ─────────────────────────────────────────────────────────────
 
-def ocr_with_gemini(pdf_path: str, api_key: str) -> tuple[str, int]:
+def ocr_with_gemini(
+    pdf_path: str, api_key: str, model: str = "gemini-2.5-flash"
+) -> tuple[str, int]:
     """
     OCR every page with the Gemini multimodal API.
     Handles handwritten and mixed-layout documents.
@@ -96,7 +98,7 @@ def ocr_with_gemini(pdf_path: str, api_key: str) -> tuple[str, int]:
         for attempt in range(3):
             try:
                 response = client.models.generate_content(
-                    model="gemini-flash-latest",
+                    model=model,
                     contents=[img, _GEMINI_PROMPT],
                 )
                 text = response.text
@@ -301,6 +303,7 @@ def clean_text(
 def process_file(
     pdf_path: str,
     gemini_api_key: str,
+    gemini_model: str = "gemini-2.5-flash",
     cloud_vision_api_key: Optional[str] = None,
     use_cloud_vision: bool = False,
     noise_patterns: Optional[list[str]] = None,
@@ -366,7 +369,7 @@ def process_file(
         if too_sparse or low_confidence:
             reason = "low confidence" if low_confidence else "sparse text"
             print(f"Cloud Vision quality insufficient ({reason}); upgrading to Gemini.")
-            gemini_text, page_count = ocr_with_gemini(pdf_path, gemini_api_key)
+            gemini_text, page_count = ocr_with_gemini(pdf_path, gemini_api_key, gemini_model)
             return {
                 "text": _clean(gemini_text),
                 "path": "cloud_vision→gemini",
@@ -383,7 +386,7 @@ def process_file(
 
     # ── Step 3: Gemini (default OCR path) ─────────────────────────────────────
     print("Path: Gemini OCR")
-    gemini_text, page_count = ocr_with_gemini(pdf_path, gemini_api_key)
+    gemini_text, page_count = ocr_with_gemini(pdf_path, gemini_api_key, gemini_model)
     return {
         "text": _clean(gemini_text),
         "path": "gemini",

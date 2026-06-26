@@ -33,6 +33,22 @@ st.markdown(
 st.divider()
 
 # ── Gemini API Key ─────────────────────────────────────────────────────────────
+st.info(
+    """
+**如何免費獲取 Gemini API Key / How to get a free Gemini API Key**
+
+① 前往 https://aistudio.google.com/apikey（只需 Google 帳號，無需信用卡）
+② 點「Create API key」→ 選「Default Gemini Project」→ 複製金鑰貼在下方
+③ 免費額度：每天約 1,500 次請求；超額後當天暫停，次日自動重置，不會自動扣費
+④ 隱私注意：免費額度下 Google 可能將輸入用於模型訓練，處理機密文件請使用付費帳戶
+
+① Go to https://aistudio.google.com/apikey — Google account only, no credit card needed
+② Click "Create API key" → choose "Default Gemini Project" → copy and paste below
+③ Free quota: ~1,500 requests/day; stops when exceeded, resets next day — no automatic charges
+④ Privacy note: On the free tier, Google may use your inputs for model training. Use a paid account for confidential documents.
+    """
+)
+
 api_key = st.text_input(
     "Gemini API Key",
     type="password",
@@ -53,33 +69,81 @@ uploaded_files = st.file_uploader(
     help="支援一次上傳多個 PDF 檔案，系統將逐一處理。",
 )
 
-# ── Cloud Vision toggle — v1: hidden from UI, ready to wire up in v2 ──────────
-USE_CLOUD_VISION = False
-CLOUD_VISION_API_KEY = None
+st.info(
+    """
+**輸出格式 / Output format**
+
+處理完成後輸出 .txt 純文字檔 / Output is plain .txt files, suitable for:
+NVivo・Atlas.ti・文本挖掘 / text mining・語料庫分析 / corpus analysis・任何需要純文字的工具 / any plain-text workflow
+    """
+)
 
 # ── Cleaning options ───────────────────────────────────────────────────────────
 st.divider()
-st.markdown("#### 文字清洗選項")
+st.markdown("#### 文字清洗選項 / Text Cleaning Options")
 
-st.markdown("**常用選項**")
-remove_page_numbers = st.checkbox("去除頁碼與頁首頁尾", value=True)
-merge_lines = st.checkbox("合併強制換行", value=True)
-to_simplified = st.checkbox("繁體轉簡體", value=False)
+# ── Gemini model selection ─────────────────────────────────────────────────────
+_MODEL_OPTIONS = {
+    "gemini-2.5-flash（免費推薦 / Free · Recommended）": "gemini-2.5-flash",
+    "gemini-2.5-pro（付費帳戶，品質更高 / Paid account · Higher quality）": "gemini-2.5-pro",
+}
+selected_model_label = st.selectbox(
+    "Gemini 模型 / Gemini Model",
+    list(_MODEL_OPTIONS.keys()),
+)
+gemini_model = _MODEL_OPTIONS[selected_model_label]
+
+st.markdown("**常用選項 / Common Options**")
+remove_page_numbers = st.checkbox("去除頁碼與頁首頁尾 / Remove page numbers & headers", value=True)
+merge_lines = st.checkbox("合併強制換行 / Merge line breaks", value=True)
+to_simplified = st.checkbox("繁體轉簡體 / Traditional → Simplified Chinese", value=False)
 
 with st.expander("進階清洗設定 / Advanced options"):
-    use_doc_paragraph_rules = st.checkbox("啟用中文公文段落識別", value=True)
+    use_doc_paragraph_rules = st.checkbox(
+        "啟用中文公文段落識別 / Chinese document paragraph detection", value=True
+    )
     custom_noise_raw = st.text_area(
-        "自訂降噪文本",
+        "自訂降噪文本 / Custom noise patterns",
         placeholder="每行輸入一段需去除的重複文字（如文件特定頁首）",
         help="每行輸入一段需去除的重複文字（如文件特定頁首），僅對短於 50 字的行有效",
         height=100,
     )
-    show_confidence = st.checkbox("顯示各頁辨識信心分數", value=False)
+    show_confidence = st.checkbox(
+        "顯示各頁辨識信心分數 / Show per-page confidence scores", value=False
+    )
 
-noise_patterns = [l.strip() for l in custom_noise_raw.splitlines() if l.strip()]
+with st.expander("⚡ 進階省錢模式 / Cost-Saving Mode（需 Google Cloud Vision API）"):
+    st.markdown(
+        """
+啟用後，掃描件將優先使用 Google Cloud Vision 處理（費用約為 Gemini 的 1/10），
+識別品質不足時自動升級至 Gemini。適合批量純印刷掃描件。
+
+需要 Google Cloud 帳號並開通 Vision API：https://cloud.google.com/vision/docs/setup
+
+When enabled, scanned pages are first processed by Cloud Vision (≈1/10 the cost of Gemini),
+and automatically upgraded to Gemini when quality is insufficient.
+Best suited for bulk, printed-only scanned documents.
+
+Requires a Google Cloud account with Vision API enabled: https://cloud.google.com/vision/docs/setup
+        """
+    )
+    use_cloud_vision = st.checkbox(
+        "啟用 Cloud Vision 省錢模式 / Enable Cloud Vision cost-saving mode",
+        value=False,
+    )
+    if use_cloud_vision:
+        cloud_vision_api_key = st.text_input(
+            "Cloud Vision API Key",
+            type="password",
+            placeholder="貼上你的 Cloud Vision API Key…",
+        )
+    else:
+        cloud_vision_api_key = None
+
+noise_patterns = [line.strip() for line in custom_noise_raw.splitlines() if line.strip()]
 
 # ── Process button ─────────────────────────────────────────────────────────────
-if st.button("開始處理", type="primary", use_container_width=True):
+if st.button("開始處理 / Start Processing", type="primary", use_container_width=True):
 
     if not api_key.strip():
         st.warning("請先填入 Gemini API Key 才能開始處理。")
@@ -108,8 +172,9 @@ if st.button("開始處理", type="primary", use_container_width=True):
             result = process_file(
                 pdf_path=tmp_path,
                 gemini_api_key=api_key.strip(),
-                cloud_vision_api_key=CLOUD_VISION_API_KEY,
-                use_cloud_vision=USE_CLOUD_VISION,
+                gemini_model=gemini_model,
+                cloud_vision_api_key=cloud_vision_api_key,
+                use_cloud_vision=use_cloud_vision,
                 noise_patterns=noise_patterns,
                 remove_page_numbers=remove_page_numbers,
                 merge_lines=merge_lines,
@@ -172,7 +237,7 @@ if st.button("開始處理", type="primary", use_container_width=True):
 
             stem = os.path.splitext(item["name"])[0]
             st.download_button(
-                label="下載 .txt",
+                label="下載 .txt / Download .txt",
                 data=r["text"].encode("utf-8"),
                 file_name=f"{stem}_cleaned.txt",
                 mime="text/plain",
@@ -180,3 +245,40 @@ if st.button("開始處理", type="primary", use_container_width=True):
             )
 
         st.divider()
+
+# ── About ──────────────────────────────────────────────────────────────────────
+with st.expander("關於本工具 / About"):
+    st.markdown(
+        """
+**開發者**：Wenxuan Shang｜北京大學畢業，現為早稻田大學在讀研究生
+
+**開發背景**：最初為處理約一萬頁台灣環評傳統中文文件（含印刷體與手寫體）而開發，現開源供研究者使用
+
+**GitHub**：https://github.com/Wenxuan-SHANG/Taiwan-EIA-OCR-Pipeline
+
+**引用建議**：如在學術研究中使用本工具，請在方法論章節註明並附上 GitHub 連結
+
+**快速操作（3 步）**：① 貼上 Gemini API Key → ② 上傳 PDF → ③ 點「開始處理 / Start Processing」→ 下載 .txt
+    """
+    )
+
+# ── Disclaimer ─────────────────────────────────────────────────────────────────
+st.warning(
+    """
+**免責聲明 / Disclaimer & Privacy**
+
+🔒 **您的文件**：上傳的文件僅在記憶體中處理，處理完成後立即刪除，本工具不儲存任何文件內容。
+🌐 **第三方處理**：文件內容將透過 Google Gemini API 傳送至 Google 進行辨識。使用本工具即表示您接受 Google 服務條款。請勿上傳您無權與 Google 共享的文件。
+🔑 **API 金鑰**：金鑰僅在本次瀏覽器會話中使用，頁面關閉即失效，不會被記錄或傳送至 Google 以外的任何伺服器。
+📄 **辨識準確性**：OCR 結果不保證完全正確，尤其手寫內容。學術引用前請人工核對。
+⚙️ **服務可用性**：本工具依賴 Streamlit Community Cloud 及 Google Gemini API 等第三方服務，開發者不保證服務持續可用。
+⚠️ **責任限制**：本工具按現狀提供，開發者不承擔因使用本工具產生的任何損失或法律責任。
+
+🔒 **Your files**: Uploaded files are processed in memory only and deleted immediately after processing. No file content is ever stored.
+🌐 **Third-party processing**: File content is sent to Google via the Gemini API for OCR. By using this tool, you accept Google's terms of service. Do not upload documents you are not authorized to share with Google.
+🔑 **API keys**: Used only within your current browser session. Never logged or transmitted to any server other than Google's.
+📄 **OCR accuracy**: Results are not guaranteed to be error-free, especially for handwritten content. Verify before academic citation.
+⚙️ **Service availability**: This tool depends on third-party services (Streamlit Community Cloud, Google Gemini API). Continuous availability is not guaranteed.
+⚠️ **Liability**: This tool is provided as-is. The developer assumes no liability for any loss or inaccuracy arising from its use.
+    """
+)
