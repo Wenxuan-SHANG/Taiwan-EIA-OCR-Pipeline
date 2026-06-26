@@ -1,3 +1,54 @@
+# Multilingual PDF OCR & Text Cleaning Tool
+
+> **This repository contains two things:**
+> 1. 🌐 A web app anyone can use instantly (no coding required) — see below
+> 2. 📓 The original Colab-based OCR scripts with detailed technical documentation — see [Original Scripts](#original-scripts) section below
+
+---
+
+## 🌐 Web App
+
+**Live tool:** https://multilingual-ocr-tool.streamlit.app
+
+Upload any PDF and get clean, plain-text output automatically — no installation, no coding, just a free Google API key.
+
+### How it works
+The tool routes each file through a cost ladder:
+1. **Free** — Digital PDFs: text layer extracted directly via PyMuPDF (zero API cost)
+2. **Affordable** (optional advanced mode) — Printed scans: Google Cloud Vision API
+3. **Universal fallback** — Handwritten or mixed content: Google Gemini Flash/Pro
+
+### How to use
+1. Open https://multilingual-ocr-tool.streamlit.app
+2. Get a free Gemini API key at https://aistudio.google.com/apikey
+   - Only a Google account is required. No credit card needed.
+   - Free quota: ~1,500 requests/day, resets daily. Stops gracefully when exceeded — no automatic charges.
+   - Note: On the free tier, Google may use your inputs for model improvement. Use a paid account for confidential documents.
+3. Paste your key, upload PDF(s), click **Start Processing**, download `.txt` output
+
+### Output
+Plain `.txt` files ready for NVivo, Atlas.ti, corpus analysis, or any text-based workflow.
+
+### Disclaimer & Privacy
+- **Your files:** Uploaded files are processed in memory and deleted immediately after. They are never stored on any server controlled by this tool.
+- **Third-party processing:** File content is sent to Google's Gemini API for OCR. By using this tool, you accept Google's terms of service. Do not upload documents you are not authorized to share with Google.
+- **API keys:** Keys are used only within your current browser session and are never logged or transmitted to any server other than Google's.
+- **OCR accuracy:** Results are not guaranteed to be error-free, especially for handwritten content. Always verify output before academic citation or publication.
+- **Service availability:** This tool depends on Streamlit Community Cloud and Google Gemini API. The developer makes no guarantee of continuous availability.
+- **No liability:** This tool is provided as-is. The developer assumes no responsibility for any loss, data breach, or inaccuracy arising from its use.
+
+### Citation
+If you use this tool in academic research, please acknowledge it in your methods section:
+
+> Shang, W. (2026). *Multilingual PDF OCR & Text Cleaning Tool* [Software]. GitHub. https://github.com/Wenxuan-SHANG/Taiwan-EIA-OCR-Pipeline
+
+### About the developer
+**Wenxuan Shang** — B.A. Peking University; currently a graduate student at Waseda University. This tool was originally developed to process approximately 10,000 pages of Traditional Chinese Environmental Impact Assessment (EIA) documents (mixed printed and handwritten) for qualitative research. It is open-sourced for use by other researchers.
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+## 📓 Original Scripts
+
 # OCR Pipeline for Traditional Chinese EIA Documents
 
 OCR pipeline for Traditional Chinese Environmental Impact Assessment (EIA) documents using `pdftotext`, Google Cloud Vision API, and the Gemini API.
