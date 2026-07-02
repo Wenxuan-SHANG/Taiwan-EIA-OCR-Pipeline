@@ -18,11 +18,35 @@ import fitz  # PyMuPDF
 from PIL import Image
 
 # ── Module-level thresholds (tune here, not scattered in functions) ────────────
-MIN_NATIVE_CHARS_PER_PAGE = 50    # avg chars/page below this → treat as scanned
-MIN_OCR_CHARS_PER_PAGE    = 20    # avg chars/page from Cloud Vision below this → upgrade
-CONFIDENCE_THRESHOLD      = 0.70  # Cloud Vision page confidence below this → upgrade
+MIN_NATIVE_CHARS_PER_PAGE     = 50    # avg chars/page below this → treat as scanned
+MIN_OCR_CHARS_PER_PAGE        = 20    # avg chars/page from Cloud Vision below this → upgrade
+CONFIDENCE_THRESHOLD          = 0.70  # Cloud Vision page confidence below this → upgrade
+CV_HANDWRITING_HINT_THRESHOLD = 0.85  # cloud_vision-only avg confidence below this → suggest Gemini
 
 _SEP = "=" * 50
+
+
+class CloudVisionUnavailableError(RuntimeError):
+    """Raised when the google-cloud-vision package is not installed."""
+
+
+class GeminiQuotaError(RuntimeError):
+    """Raised when Gemini returns a quota/permission error (e.g. free key + Pro model)."""
+
+
+class GeminiKeyRequiredError(RuntimeError):
+    """Raised when a file's routing requires Gemini OCR but no Gemini API key was provided."""
+
+
+class OpenCCUnavailableError(RuntimeError):
+    """Raised when the opencc-python-reimplemented package is not installed."""
+
+# ── API pricing constants (update here when rates change) ──────────────────────
+GEMINI_FLASH_INPUT    = 0.30  / 1_000_000   # $ per input token
+GEMINI_FLASH_OUTPUT   = 2.50  / 1_000_000   # $ per output token
+GEMINI_PRO_INPUT      = 1.25  / 1_000_000   # $ per input token
+GEMINI_PRO_OUTPUT     = 10.00 / 1_000_000   # $ per output token
+CLOUD_VISION_PER_PAGE = 1.50  / 1_000       # $ per page
 
 _GEMINI_PROMPT = (
     "Recognize all text in the image, including both printed and "
@@ -68,7 +92,7 @@ def extract_native_text(pdf_path: str) -> tuple[str, bool]:
 
 def ocr_with_gemini(
     pdf_path: str, api_key: str, model: str = "gemini-2.5-flash"
-) -> tuple[str, int]:
+) -> tuple[str, int, dict]:
     """
     OCR every page with the Gemini multimodal API.
     Handles handwritten and mixed-layout documents.
@@ -78,8 +102,9 @@ def ocr_with_gemini(
       other errors      → capped at 5 s
 
     Returns:
-        text:       combined text with ==Page N== separators
-        page_count: total pages processed
+        text:        combined text with ==Page N== separators
+        page_count:  total pages processed
+        token_usage: {"input_tokens": int, "output_tokens": int} accumulated across all pages
     """
     from google import genai  # deferred: not needed on the native path
 
@@ -87,6 +112,8 @@ def ocr_with_gemini(
     doc = fitz.open(pdf_path)
     total_pages = len(doc)
     parts: list[str] = []
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     for i, page in enumerate(doc, start=1):
         print(f"Gemini OCR: page {i}/{total_pages}...", end=" ", flush=True)
@@ -102,11 +129,16 @@ def ocr_with_gemini(
                     contents=[img, _GEMINI_PROMPT],
                 )
                 text = response.text
+                um = getattr(response, "usage_metadata", None)
+                if um:
+                    total_input_tokens  += getattr(um, "prompt_token_count",     0) or 0
+                    total_output_tokens += getattr(um, "candidates_token_count", 0) or 0
                 print(f"OK ({len(text)} chars)")
                 break
             except Exception as e:
                 err = str(e)
                 is_rate_limit = any(k in err for k in ("429", "RESOURCE_EXHAUSTED", "quota"))
+                is_quota_or_permission = any(k in err for k in ("RESOURCE_EXHAUSTED", "PERMISSION_DENIED"))
                 wait = (2 ** attempt) * 5  # 5 s, 10 s, 20 s
                 if not is_rate_limit:
                     wait = min(wait, 5)
@@ -114,12 +146,15 @@ def ocr_with_gemini(
                     print(f"retrying in {wait}s...", end=" ", flush=True)
                     time.sleep(wait)
                 else:
+                    print(f"Gemini OCR page {i} FAILED: {e}")
+                    if is_quota_or_permission:
+                        raise GeminiQuotaError(f"Gemini quota/permission error: {e}") from e
                     text = f"[Recognition failed: {e}]"
-                    print("FAILED")
 
         parts.append(f"{_page_header(i)}{text}\n")
 
-    return "".join(parts), total_pages
+    token_usage = {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
+    return "".join(parts), total_pages, token_usage
 
 
 # ── 3. Cloud Vision OCR ───────────────────────────────────────────────────────
@@ -135,7 +170,11 @@ def ocr_with_cloud_vision(pdf_path: str, api_key: str) -> tuple[str, int, list[f
         page_confidences:   per-page confidence scores (0.0–1.0); empty when
                             the API returns no confidence data
     """
-    from google.cloud import vision  # deferred: not needed on other paths
+    try:
+        from google.cloud import vision  # deferred: not needed on other paths
+    except ImportError as e:
+        print(f"Cloud Vision import failed: {e}")
+        raise CloudVisionUnavailableError("google-cloud-vision is not installed") from e
 
     client = vision.ImageAnnotatorClient(
         client_options={"api_key": api_key}
@@ -178,8 +217,11 @@ def ocr_with_cloud_vision(pdf_path: str, api_key: str) -> tuple[str, int, list[f
 
 # ── 4. Text cleaning ──────────────────────────────────────────────────────────
 
-def _is_noise_line(line: str, noise_patterns: list[str], remove_page_numbers: bool = True) -> bool:
-    """Return True if the line is structural noise to be removed."""
+def _is_noise_line(line: str, remove_page_numbers: bool = True) -> bool:
+    """Return True if the line is built-in structural noise to be removed
+    (page markers, etc). Caller-supplied noise_patterns are handled
+    separately as substring removal, not whole-line removal — see
+    _clean_page."""
     line = line.strip()
     if not line:
         return True
@@ -193,11 +235,20 @@ def _is_noise_line(line: str, noise_patterns: list[str], remove_page_numbers: bo
         # Dash-wrapped page numbers: "- 1 -", "—10—"
         if re.match(r"^[-－]\s*\d+\s*[-－]$", line):
             return True
-    # Caller-supplied document-specific header/footer patterns
-    for pattern in noise_patterns:
-        if pattern in line and len(line) < 50:
-            return True
     return False
+
+
+def _is_standalone_page_number(idx: int, raw_lines: list[str]) -> bool:
+    """True if raw_lines[idx] is a bare 1-4 digit number sitting alone on its
+    own raw OCR line (e.g. a page number like "1", "23").
+
+    Real OCR output rarely surrounds a footer/header page number with a
+    genuinely blank line — it usually sits directly next to body text on
+    the adjacent line — so isolation is judged purely by the line's own
+    content (nothing but 1-4 digits), not by blank neighbors.
+    """
+    line = raw_lines[idx].strip()
+    return bool(re.match(r"^\d{1,4}$", line))
 
 
 def _clean_page(
@@ -208,8 +259,20 @@ def _clean_page(
     use_doc_paragraph_rules: bool = True,
 ) -> str:
     """Remove noise lines and intelligently merge hard line-breaks."""
+    # Caller-supplied document-specific noise is removed as a plain substring
+    # wherever it appears, *before* splitting into lines — it may share a raw
+    # OCR line with unrelated text (e.g. a cover-page title run together with
+    # the following heading), so whole-line removal would delete too much.
+    for pattern in noise_patterns:
+        if pattern:
+            page_text = page_text.replace(pattern, "")
+
     lines = page_text.split("\n")
-    clean_lines = [l for l in lines if not _is_noise_line(l, noise_patterns, remove_page_numbers)]
+    clean_lines = [
+        l for i, l in enumerate(lines)
+        if not _is_noise_line(l, remove_page_numbers)
+        and not (remove_page_numbers and _is_standalone_page_number(i, lines))
+    ]
 
     if not use_doc_paragraph_rules:
         return "\n\n".join(l.strip() for l in clean_lines if l.strip())
@@ -264,8 +327,9 @@ def clean_text(
 
     Args:
         text:                    raw combined text
-        noise_patterns:          strings treated as header/footer noise when found on
-                                 a short line (< 50 chars). Defaults to [].
+        noise_patterns:          exact substrings to strip out wherever they occur
+                                 (document-specific headers/titles/watermarks).
+                                 Defaults to [].
         remove_page_numbers:     strip built-in page number / header patterns.
         merge_lines:             merge layout-forced line breaks into full sentences.
         use_doc_paragraph_rules: use Chinese doc numbering (一、②、（一）…) to detect
@@ -292,17 +356,42 @@ def clean_text(
     result = "\n\n" + "=" * 50 + "\n" + sep.join(cleaned_pages)
 
     if to_simplified:
-        from opencc import OpenCC
+        try:
+            from opencc import OpenCC
+        except ImportError as e:
+            raise OpenCCUnavailableError("opencc-python-reimplemented is not installed") from e
         result = OpenCC("t2s").convert(result)
 
     return result
 
 
-# ── 5. Main orchestrator ───────────────────────────────────────────────────────
+# ── 5. Cost calculator ────────────────────────────────────────────────────────
+
+def calculate_cost(usage: dict, gemini_model: str) -> float:
+    """Return estimated USD cost from the usage dict produced by process_file."""
+    kind = usage.get("type", "")
+    if kind == "native":
+        return 0.0
+    if "flash" in gemini_model:
+        inp_price, out_price = GEMINI_FLASH_INPUT, GEMINI_FLASH_OUTPUT
+    else:
+        inp_price, out_price = GEMINI_PRO_INPUT, GEMINI_PRO_OUTPUT
+    if kind == "gemini":
+        return usage["input_tokens"] * inp_price + usage["output_tokens"] * out_price
+    if kind == "cloud_vision":
+        return usage["pages"] * CLOUD_VISION_PER_PAGE
+    if kind == "cloud_vision→gemini":
+        cv_cost     = usage["cv_pages"] * CLOUD_VISION_PER_PAGE
+        gemini_cost = usage["input_tokens"] * inp_price + usage["output_tokens"] * out_price
+        return cv_cost + gemini_cost
+    return 0.0
+
+
+# ── 6. Main orchestrator ───────────────────────────────────────────────────────
 
 def process_file(
     pdf_path: str,
-    gemini_api_key: str,
+    gemini_api_key: Optional[str] = None,
     gemini_model: str = "gemini-2.5-flash",
     cloud_vision_api_key: Optional[str] = None,
     use_cloud_vision: bool = False,
@@ -324,7 +413,8 @@ def process_file(
 
     Args:
         pdf_path:                path to the input PDF
-        gemini_api_key:          Gemini API key (always required as the fallback)
+        gemini_api_key:          Gemini API key; required only for files that end up needing
+                                 Gemini (default OCR path, or Cloud Vision quality upgrade)
         cloud_vision_api_key:    Cloud Vision API key (required when use_cloud_vision=True)
         use_cloud_vision:        set True to enable the Cloud Vision → Gemini tier
         noise_patterns:          forwarded to clean_text (document-specific headers)
@@ -339,6 +429,7 @@ def process_file(
             "path":             str,              # "native" | "cloud_vision" | "cloud_vision→gemini" | "gemini"
             "page_count":       int,
             "page_confidences": list[float]|None, # per-page scores; None for native, [] when unavailable
+            "usage":            dict,             # token/page counts for cost calculation
         }
     """
     _clean = lambda raw: clean_text(
@@ -354,42 +445,61 @@ def process_file(
             "path": "native",
             "page_count": _count_pages(native_text),
             "page_confidences": None,
+            "usage": {"type": "native"},
         }
 
     # ── Step 2: Cloud Vision (optional, cheaper OCR) ──────────────────────────
     if use_cloud_vision and cloud_vision_api_key:
-        cv_text, page_count, page_confidences = ocr_with_cloud_vision(
+        cv_text, cv_page_count, page_confidences = ocr_with_cloud_vision(
             pdf_path, cloud_vision_api_key
         )
-        avg_chars = len(cv_text) / page_count if page_count else 0
+        avg_chars = len(cv_text) / cv_page_count if cv_page_count else 0
         avg_confidence = sum(page_confidences) / len(page_confidences) if page_confidences else 0.0
         too_sparse     = avg_chars < MIN_OCR_CHARS_PER_PAGE
         low_confidence = avg_confidence > 0 and avg_confidence < CONFIDENCE_THRESHOLD
 
         if too_sparse or low_confidence:
             reason = "low confidence" if low_confidence else "sparse text"
+            if not gemini_api_key:
+                raise GeminiKeyRequiredError(
+                    f"Cloud Vision quality insufficient ({reason}) and no Gemini API key was provided"
+                )
             print(f"Cloud Vision quality insufficient ({reason}); upgrading to Gemini.")
-            gemini_text, page_count = ocr_with_gemini(pdf_path, gemini_api_key, gemini_model)
+            gemini_text, page_count, token_usage = ocr_with_gemini(pdf_path, gemini_api_key, gemini_model)
             return {
                 "text": _clean(gemini_text),
                 "path": "cloud_vision→gemini",
                 "page_count": page_count,
                 "page_confidences": [],
+                "usage": {
+                    "type": "cloud_vision→gemini",
+                    "cv_pages": cv_page_count,
+                    "input_tokens": token_usage["input_tokens"],
+                    "output_tokens": token_usage["output_tokens"],
+                },
             }
 
         return {
             "text": _clean(cv_text),
             "path": "cloud_vision",
-            "page_count": page_count,
+            "page_count": cv_page_count,
             "page_confidences": page_confidences,
+            "usage": {"type": "cloud_vision", "pages": cv_page_count},
         }
 
     # ── Step 3: Gemini (default OCR path) ─────────────────────────────────────
+    if not gemini_api_key:
+        raise GeminiKeyRequiredError("This file requires Gemini OCR, but no Gemini API key was provided")
     print("Path: Gemini OCR")
-    gemini_text, page_count = ocr_with_gemini(pdf_path, gemini_api_key, gemini_model)
+    gemini_text, page_count, token_usage = ocr_with_gemini(pdf_path, gemini_api_key, gemini_model)
     return {
         "text": _clean(gemini_text),
         "path": "gemini",
         "page_count": page_count,
         "page_confidences": [],
+        "usage": {
+            "type": "gemini",
+            "input_tokens": token_usage["input_tokens"],
+            "output_tokens": token_usage["output_tokens"],
+        },
     }

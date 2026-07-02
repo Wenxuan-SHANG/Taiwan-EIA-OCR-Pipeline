@@ -4,16 +4,30 @@ app.py — Taiwan EIA OCR Pipeline: Streamlit web interface
 
 import os
 import tempfile
+import time
 
 import streamlit as st
 
-from core import process_file
+from core import (
+    CV_HANDWRITING_HINT_THRESHOLD,
+    CloudVisionUnavailableError,
+    GeminiKeyRequiredError,
+    GeminiQuotaError,
+    OpenCCUnavailableError,
+    calculate_cost,
+    process_file,
+)
 
 # ── Bilingual text registry ────────────────────────────────────────────────────
 TEXTS = {
     "zh": {
         "title":    "✍️ Glyph OCR",
         "subtitle": "AI 驅動的手寫與印刷 PDF 文字辨識 · 由 Google Gemini 提供支援",
+        "subtitle_kw1":  "AI 驅動",
+        "subtitle_mid1": "的",
+        "subtitle_kw2":  "手寫",
+        "subtitle_mid2": "與印刷 PDF 文字辨識",
+        "badge_poweredby": "由 Google Gemini 提供支援",
         "upload_label": "拖曳或點擊上傳，支援多個 PDF，單檔最大 500MB",
         "upload_help":  "系統將依序處理每個 PDF，電子版直接免費抽取，掃描件自動 OCR。",
         "api_key_placeholder": "貼上你的 Gemini API Key…",
@@ -46,7 +60,7 @@ TEXTS = {
 
 ④ 完成後，原本的 Key 即自動升級為付費帳戶，可使用 Gemini Pro 並享有更高額度
 
-Gemini Flash: ~\\$0.075 USD / 1M tokens · Gemini Pro: ~\\$1.25 USD / 1M tokens — [Google 官方定價](https://ai.google.dev/pricing)
+Gemini Flash：\$0.30 USD / 每 1M 輸入 token · \$2.50 USD / 每 1M 輸出 token  ·  Gemini Pro：\$1.25 USD / 每 1M 輸入 token · \$10.00 USD / 每 1M 輸出 token — [Google 官方定價](https://ai.google.dev/pricing)
 """,
         "process_btn": "開始處理",
         "advanced_expander": "高級選項",
@@ -91,14 +105,18 @@ Gemini Flash: ~\\$0.075 USD / 1M tokens · Gemini Pro: ~\\$1.25 USD / 1M tokens 
         "noise_caption":     "每行輸入一個模式，系統將精確比對，刪除獨立成行的相符內容。適合去除文件中重複出現的固定頁首或特定短語。",
         "noise_placeholder": "每行輸入一段需去除的重複文字（如文件特定頁首）",
         "noise_help":        "每行輸入一段需去除的重複文字（如文件特定頁首），僅對短於 50 字的行有效",
-        # processing / results — no English equivalent in app.py; Chinese kept for both modes
-        "warn_no_api_key":     "請先填入 Gemini API Key 才能開始處理。",
+        "warn_no_api_key":     "請至少填入一組 API Key（Gemini 或 Cloud Vision）才能開始處理。",
         "warn_no_files":       "請先上傳至少一個 PDF 檔案。",
         "progress_preparing":  "準備中…",
         "progress_file":       "正在處理第 {i} / {n} 個檔案：{name}",
         "progress_done":       "全部處理完成！",
         "success_msg":         "已完成 {n} 個檔案的處理。",
         "error_msg":           "處理失敗：{e}",
+        "error_cloud_vision_unavailable": "Cloud Vision 功能暫時不可用，請改用 Gemini 模式。",
+        "error_gemini_quota":  "此 API 金鑰無法使用所選模型（免費金鑰僅支援 Gemini Flash）。請改用 Flash，或改用付費金鑰。",
+        "error_gemini_key_required": "此檔案需要 Gemini 進行辨識（手寫內容或 Cloud Vision 品質不足），但未提供 Gemini API Key。",
+        "error_opencc_unavailable": "繁簡轉換功能暫時不可用，請聯繫開發者。",
+        "cv_handwriting_caveat": "此為印刷體專用引擎的辨識結果，手寫內容準確度可能較低。建議改用 Gemini 以獲得更好的手寫辨識效果。",
         "path_prefix":         "處理路徑：",
         "path_native":         "免費原生抽取（電子版 PDF，無需 OCR）",
         "path_gemini":         "Gemini OCR（含手寫辨識）",
@@ -113,11 +131,17 @@ Gemini Flash: ~\\$0.075 USD / 1M tokens · Gemini Pro: ~\\$1.25 USD / 1M tokens 
         "conf_table_page":     "頁碼",
         "conf_table_score":    "信心分數",
         "download_btn": "下載 .txt",
+        "stat_time":      "處理時間：{t} 秒",
+        "stat_tokens":    "輸入 {inp} / 輸出 {out} tokens",
+        "stat_cost":      "估算成本：≈ ${cost} USD（估算）",
+        "stat_cost_free": "估算成本：免費 / Free",
+        "summary_total":  "全部合計：耗時 {t} 秒 · 估算成本 ≈ ${cost} USD",
+        "cost_note":      "此為依標準付費費率的估算。實際費用取決於你自己金鑰的計費層級與額度——免費層級金鑰在額度內通常不計費。",
         "about_expander": "關於本工具",
         "about_content": """\
 **開發者**：Wenxuan Shang（北京大學畢業，現為早稻田大學在讀研究生）
 
-**開發背景**：最初為處理台灣環境影響評估（環評）傳統中文文件而開發，現開源供研究者使用
+**開發背景**：最初為處理台灣環境影響評估文件而開發，現開源供研究者使用
 
 **GitHub**：https://github.com/Wenxuan-SHANG/Taiwan-EIA-OCR-Pipeline
 
@@ -145,8 +169,13 @@ Gemini Flash: ~\\$0.075 USD / 1M tokens · Gemini Pro: ~\\$1.25 USD / 1M tokens 
     "en": {
         "title":    "✍️ Glyph OCR",
         "subtitle": "AI-powered OCR for handwritten & printed PDFs · Powered by Google Gemini",
+        "subtitle_kw1":  "AI-powered",
+        "subtitle_mid1": " OCR for ",
+        "subtitle_kw2":  "handwritten",
+        "subtitle_mid2": " & printed PDFs",
+        "badge_poweredby": "Powered by Google Gemini",
         "upload_label": "Drag & drop or click, multiple PDFs supported, max 500MB each",
-        "upload_help":  "系統將依序處理每個 PDF，電子版直接免費抽取，掃描件自動 OCR。",
+        "upload_help":  "Files are processed one by one — digital PDFs are extracted for free, scanned PDFs are OCR'd automatically.",
         "api_key_placeholder": "Paste your Gemini API Key…",
         "api_key_caption": "This key is used only for the current session and is never stored or transmitted.",
         "key_expander_label": "Need a key?",
@@ -177,7 +206,7 @@ After enabling billing, your existing API key upgrades automatically — **no ne
 
 ④ Your existing key now supports Gemini Pro and higher quotas
 
-Gemini Flash: ~\\$0.075 USD / 1M tokens · Gemini Pro: ~\\$1.25 USD / 1M tokens — [Google official pricing](https://ai.google.dev/pricing)
+Gemini Flash: \$0.30 USD / 1M input · \$2.50 USD / 1M output  ·  Gemini Pro: \$1.25 USD / 1M input · \$10.00 USD / 1M output — [Google official pricing](https://ai.google.dev/pricing)
 """,
         "process_btn": "Start Processing",
         "advanced_expander": "Advanced",
@@ -222,29 +251,39 @@ Best suited for bulk, printed-only scanned documents.
         "noise_label":       "Custom noise patterns",
         "noise_caption":     "Enter one pattern per line. Exact-match only — each line is removed if it appears verbatim as a standalone line in the output. Best for repeated headers or fixed phrases unique to your document.",
         "noise_placeholder": "Enter one pattern per line to remove (e.g. repeated document headers)",
-        "noise_help":        "每行輸入一段需去除的重複文字（如文件特定頁首），僅對短於 50 字的行有效",
-        # no English equivalent in app.py — kept as Chinese
-        "warn_no_api_key":     "請先填入 Gemini API Key 才能開始處理。",
-        "warn_no_files":       "請先上傳至少一個 PDF 檔案。",
-        "progress_preparing":  "準備中…",
-        "progress_file":       "正在處理第 {i} / {n} 個檔案：{name}",
-        "progress_done":       "全部處理完成！",
-        "success_msg":         "已完成 {n} 個檔案的處理。",
-        "error_msg":           "處理失敗：{e}",
-        "path_prefix":         "處理路徑：",
-        "path_native":         "免費原生抽取（電子版 PDF，無需 OCR）",
-        "path_gemini":         "Gemini OCR（含手寫辨識）",
-        "path_cv":             "Cloud Vision OCR（印刷體）",
-        "path_cv_upgrade":     "Cloud Vision 品質不足，已自動升級至 Gemini",
-        "metric_pages":        "處理頁數",
-        "metric_pages_suffix": "頁",
-        "text_expander":       "查看文字內容",
-        "conf_no_data":        "此文件為免費抽取，無置信度數據。",
-        "conf_no_gemini":      "Gemini 模型不提供信心分數。",
-        "conf_expander":       "各頁辨識信心分數（共 {n} 頁）",
-        "conf_table_page":     "頁碼",
-        "conf_table_score":    "信心分數",
+        "noise_help":        "One pattern per line to remove (e.g. a document-specific header); only applies to lines under 50 characters.",
+        "warn_no_api_key":     "Please enter at least one API key (Gemini or Cloud Vision) before starting.",
+        "warn_no_files":       "Please upload at least one PDF file first.",
+        "progress_preparing":  "Preparing…",
+        "progress_file":       "Processing file {i} of {n}: {name}",
+        "progress_done":       "All processing complete!",
+        "success_msg":         "Processed {n} file(s).",
+        "error_msg":           "Processing failed: {e}",
+        "error_cloud_vision_unavailable": "Cloud Vision is temporarily unavailable — please use Gemini mode instead.",
+        "error_gemini_quota":  "This API key can't use the selected model (free keys only support Gemini Flash). Please switch to Flash, or use a paid key.",
+        "error_gemini_key_required": "This file requires Gemini for recognition (handwriting or insufficient Cloud Vision quality), but no Gemini API key was provided.",
+        "error_opencc_unavailable": "Traditional/Simplified conversion is temporarily unavailable. Please contact the developer.",
+        "cv_handwriting_caveat": "This engine is optimized for printed text; handwriting accuracy may be lower. Consider using Gemini for better handwriting recognition.",
+        "path_prefix":         "Processing path:",
+        "path_native":         "Free native extraction (digital PDF, no OCR)",
+        "path_gemini":         "Gemini OCR (handwriting supported)",
+        "path_cv":             "Cloud Vision OCR (printed)",
+        "path_cv_upgrade":     "Cloud Vision quality insufficient — automatically upgraded to Gemini",
+        "metric_pages":        "Pages processed",
+        "metric_pages_suffix": "pages",
+        "text_expander":       "View extracted text",
+        "conf_no_data":        "Free extraction — no confidence data.",
+        "conf_no_gemini":      "Gemini does not provide confidence scores.",
+        "conf_expander":       "Per-page confidence scores ({n} pages total)",
+        "conf_table_page":     "Page",
+        "conf_table_score":    "Confidence",
         "download_btn": "Download .txt",
+        "stat_time":      "Processing time: {t} s",
+        "stat_tokens":    "{inp} input / {out} output tokens",
+        "stat_cost":      "Estimated cost: ≈ ${cost} USD (est.)",
+        "stat_cost_free": "Estimated cost: Free",
+        "summary_total":  "Total: {t} s · Estimated cost ≈ ${cost} USD",
+        "cost_note":      "Estimated at standard paid API rates. Your actual cost depends on your own key's billing tier and quota — free-tier keys within quota are typically not charged.",
         "about_expander": "About",
         "about_content": """\
 **Developer**: Wenxuan Shang (B.A. Peking University, currently a graduate student at Waseda University)
@@ -298,8 +337,49 @@ with _col_lang:
 T = TEXTS["en" if st.session_state.lang_radio == "English" else "zh"]
 
 with _col_title:
-    st.title(T["title"])
-    st.caption(T["subtitle"])
+    _title_icon, _title_text = T["title"].split(" ", 1)
+    st.markdown(
+        f"""
+<style>
+.goc-header-top {{
+    display:flex; align-items:center; gap:0.6rem; margin-bottom:0.2rem;
+}}
+.goc-logo {{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:2.6rem; height:2.6rem; border-radius:12px; flex-shrink:0;
+    background:linear-gradient(135deg,#4A90D9,#7BB3ED);
+    font-size:1.4rem; box-shadow:0 3px 10px rgba(74,144,217,0.35);
+}}
+.goc-title-text {{
+    font-size:2.1rem; font-weight:800; color:#1A2B3C;
+    letter-spacing:-0.02em; line-height:1;
+}}
+.goc-subtitle-line {{
+    font-size:1.02rem; color:#3D4A5C; margin:0.35rem 0 0.6rem 0; line-height:1.55;
+}}
+.goc-chip {{
+    display:inline-block; font-weight:700; color:#1568C1;
+    background:rgba(74,144,217,0.12);
+    padding:0.05rem 0.5rem; border-radius:6px;
+}}
+.goc-badge-poweredby {{
+    display:inline-flex; align-items:center; gap:0.3rem;
+    font-size:0.78rem; font-weight:600; color:#5B6472;
+    background:#F0F2F5; border:1px solid #E1E5EA;
+    padding:0.2rem 0.7rem; border-radius:999px;
+}}
+</style>
+<div class="goc-header-top">
+    <span class="goc-logo">{_title_icon}</span>
+    <span class="goc-title-text">{_title_text}</span>
+</div>
+<div class="goc-subtitle-line" aria-label="{T['subtitle']}">
+    <span class="goc-chip">{T['subtitle_kw1']}</span>{T['subtitle_mid1']}<span class="goc-chip">{T['subtitle_kw2']}</span>{T['subtitle_mid2']}
+</div>
+<div><span class="goc-badge-poweredby">✨ {T['badge_poweredby']}</span></div>
+""",
+        unsafe_allow_html=True,
+    )
 
 # ── File uploader ──────────────────────────────────────────────────────────────
 st.markdown(
@@ -341,7 +421,7 @@ with st.expander(T["key_expander_label"]):
     st.markdown(T["key_guide"])
 
 # ── Process button ─────────────────────────────────────────────────────────────
-process = st.button(T["process_btn"], type="primary", use_container_width=True)
+process_top = st.button(T["process_btn"], type="primary", use_container_width=True, key="process_btn_top")
 
 # ── Advanced options ───────────────────────────────────────────────────────────
 with st.expander(T["advanced_expander"]):
@@ -390,12 +470,19 @@ with st.expander(T["advanced_expander"]):
         height=100,
     )
 
+    # ── Process button (bottom) ───────────────────────────────────────────
+    process_bottom = st.button(T["process_btn"], type="primary", use_container_width=True, key="process_bottom")
+
 noise_patterns = [line.strip() for line in custom_noise_raw.splitlines() if line.strip()]
+
+process = process_top or process_bottom
 
 # ── Processing ─────────────────────────────────────────────────────────────────
 if process:
 
-    if not api_key.strip():
+    has_gemini_key = bool(api_key.strip())
+    has_cv_key = bool(use_cloud_vision and cloud_vision_api_key and cloud_vision_api_key.strip())
+    if not has_gemini_key and not has_cv_key:
         st.warning(T["warn_no_api_key"])
         st.stop()
 
@@ -418,9 +505,10 @@ if process:
             tmp_path = tmp.name
 
         try:
+            t0 = time.time()
             result = process_file(
                 pdf_path=tmp_path,
-                gemini_api_key=api_key.strip(),
+                gemini_api_key=api_key.strip() or None,
                 gemini_model=gemini_model,
                 cloud_vision_api_key=cloud_vision_api_key,
                 use_cloud_vision=use_cloud_vision,
@@ -430,17 +518,39 @@ if process:
                 use_doc_paragraph_rules=use_doc_paragraph_rules,
                 to_simplified=to_simplified,
             )
-            results.append({"name": uploaded_file.name, "result": result, "error": None})
+            elapsed = time.time() - t0
+            results.append({"name": uploaded_file.name, "result": result, "error": None, "elapsed": elapsed})
+        except CloudVisionUnavailableError as e:
+            print(f"Cloud Vision unavailable: {e}")
+            results.append({"name": uploaded_file.name, "result": None, "error": T["error_cloud_vision_unavailable"], "elapsed": None})
+        except GeminiQuotaError as e:
+            print(f"Gemini quota/permission error: {e}")
+            results.append({"name": uploaded_file.name, "result": None, "error": T["error_gemini_quota"], "elapsed": None})
+        except GeminiKeyRequiredError as e:
+            print(f"Gemini API key required: {e}")
+            results.append({"name": uploaded_file.name, "result": None, "error": T["error_gemini_key_required"], "elapsed": None})
+        except OpenCCUnavailableError as e:
+            print(f"OpenCC unavailable: {e}")
+            results.append({"name": uploaded_file.name, "result": None, "error": T["error_opencc_unavailable"], "elapsed": None})
         except Exception as e:
-            results.append({"name": uploaded_file.name, "result": None, "error": str(e)})
+            results.append({"name": uploaded_file.name, "result": None, "error": str(e), "elapsed": None})
         finally:
             os.unlink(tmp_path)
 
     progress.progress(1.0, text=T["progress_done"])
+
+    st.session_state["ocr_results"] = results
+    st.session_state["ocr_gemini_model"] = gemini_model
+
+# ── Results ─────────────────────────────────────────────────────────────────────
+if "ocr_results" in st.session_state:
+    results = st.session_state["ocr_results"]
+    gemini_model = st.session_state["ocr_gemini_model"]
+    n = len(results)
+
     st.success(T["success_msg"].format(n=n))
     st.divider()
 
-    # ── Results ────────────────────────────────────────────────────────────────
     _PATH_LABELS = {
         "native":              T["path_native"],
         "gemini":              T["path_gemini"],
@@ -455,10 +565,32 @@ if process:
             st.error(T["error_msg"].format(e=item["error"]))
         else:
             r = item["result"]
+            elapsed = item["elapsed"]
 
             col1, col2 = st.columns([3, 1])
             col1.markdown(f"**{T['path_prefix']}** {_PATH_LABELS.get(r['path'], r['path'])}")
             col2.metric(T["metric_pages"], f"{r['page_count']} {T['metric_pages_suffix']}")
+
+            if r["path"] == "cloud_vision":
+                confs = r.get("page_confidences") or []
+                if confs and (sum(confs) / len(confs)) < CV_HANDWRITING_HINT_THRESHOLD:
+                    st.info(T["cv_handwriting_caveat"])
+
+            usage = r.get("usage", {})
+            cost  = calculate_cost(usage, gemini_model)
+
+            st.caption(T["stat_time"].format(t=f"{elapsed:.1f}"))
+
+            if usage.get("type") in ("gemini", "cloud_vision→gemini"):
+                st.caption(T["stat_tokens"].format(
+                    inp=usage.get("input_tokens", 0),
+                    out=usage.get("output_tokens", 0),
+                ))
+
+            if usage.get("type") == "native":
+                st.caption(T["stat_cost_free"])
+            else:
+                st.caption(T["stat_cost"].format(cost=f"{cost:.4f}"))
 
             with st.expander(T["text_expander"], expanded=False):
                 st.text_area(
@@ -494,6 +626,15 @@ if process:
             )
 
         st.divider()
+
+    total_elapsed = sum(item["elapsed"] for item in results if item["elapsed"] is not None)
+    total_cost = sum(
+        calculate_cost(item["result"]["usage"], gemini_model)
+        for item in results
+        if item["result"] and "usage" in item["result"]
+    )
+    st.info(T["summary_total"].format(t=f"{total_elapsed:.1f}", cost=f"{total_cost:.4f}"))
+    st.caption(T["cost_note"])
 
 # ── About ──────────────────────────────────────────────────────────────────────
 with st.expander(T["about_expander"]):
