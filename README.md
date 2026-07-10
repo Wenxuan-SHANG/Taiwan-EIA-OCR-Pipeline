@@ -122,10 +122,11 @@ Built and iterated with **Claude Code** as an AI pair-programmer, in an *agentic
 - **Service availability:** This tool depends on Streamlit Community Cloud and Google Gemini API. The developer makes no guarantee of continuous availability.
 - **No liability:** This tool is provided as-is. The developer assumes no responsibility for any loss, data breach, or inaccuracy arising from its use.
 
-### Citation
+## Citation
+
 If you use this tool in academic research, please acknowledge it in your methods section:
 
-> Shang, W. (2026). *Multilingual PDF OCR & Text Cleaning Tool* [Software]. GitHub. https://github.com/Wenxuan-SHANG/Taiwan-EIA-OCR-Pipeline
+> Shang, W. (2026). *Glyph OCR: An AI-powered OCR tool for handwritten and printed Traditional Chinese documents* [Software]. GitHub. https://github.com/Wenxuan-SHANG/Taiwan-EIA-OCR-Pipeline (Live app: https://glyph-ocr.streamlit.app)
 
 ### About the developer
 **Wenxuan Shang** — B.A. Peking University; currently a graduate student at Waseda University. This tool was originally developed to process approximately 10,000 pages of Traditional Chinese Environmental Impact Assessment (EIA) documents (mixed printed and handwritten) for qualitative research. It is open-sourced for use by other researchers.
