@@ -12,7 +12,7 @@
 
 This started as a research problem, not a product idea.
 
-My master's thesis at Waseda University analyzes over 1,000 pages of Taiwan's Environmental Impact Assessment (EIA) records — a mix of printed government documents, scanned pages, and **handwritten** meeting notes and citizen comments, almost all in **Traditional Chinese**. Before any qualitative coding could begin, every page had to become accurate, searchable text.
+My master's thesis at Waseda University analyzes over 10,000 pages of Taiwan's Environmental Impact Assessment (EIA) records — a mix of printed government documents, scanned pages, and **handwritten** meeting notes and citizen comments, almost all in **Traditional Chinese**. Before any qualitative coding could begin, every page had to become accurate, searchable text.
 
 Existing options each failed in a specific way:
 
