@@ -122,7 +122,7 @@ Built and iterated with **Claude Code** as an AI pair-programmer, in an *agentic
 - **Service availability:** This tool depends on Streamlit Community Cloud and Google Gemini API. The developer makes no guarantee of continuous availability.
 - **No liability:** This tool is provided as-is. The developer assumes no responsibility for any loss, data breach, or inaccuracy arising from its use.
 
-## Citation
+### Citation
 
 If you use this tool in academic research, please acknowledge it in your methods section:
 
