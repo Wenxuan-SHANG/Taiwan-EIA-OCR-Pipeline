@@ -1,33 +1,119 @@
-# Multilingual PDF OCR & Text Cleaning Tool
+# Glyph OCR
 
-> **This repository contains two things:**
-> 1. 🌐 A web app anyone can use instantly (no coding required) — see below
-> 2. 📓 The original Colab-based OCR scripts with detailed technical documentation — see [Original Scripts](#original-scripts) section below
+**A free, no-login web tool that turns handwritten and printed PDFs into clean, searchable text — powered by Google's Gemini and Cloud Vision AI, using your own API key.**
+
+🔗 **Live app:** https://glyph-ocr.streamlit.app
+
+> No account. No payment. No files stored. Open-source and auditable — you don't have to trust it, you can verify it.
 
 ---
 
-## 🌐 Web App
+## Why this exists
 
-**Live tool:** https://multilingual-ocr-tool.streamlit.app
+This started as a research problem, not a product idea.
 
-Upload any PDF and get clean, plain-text output automatically — no installation, no coding, just a free Google API key.
+My master's thesis at Waseda University analyzes over 1,000 pages of Taiwan's Environmental Impact Assessment (EIA) records — a mix of printed government documents, scanned pages, and **handwritten** meeting notes and citizen comments, almost all in **Traditional Chinese**. Before any qualitative coding could begin, every page had to become accurate, searchable text.
 
-### How it works
-The tool routes each file through a cost ladder:
-1. **Free** — Digital PDFs: text layer extracted directly via PyMuPDF (zero API cost)
-2. **Affordable** (optional advanced mode) — Printed scans: Google Cloud Vision API
-3. **Universal fallback** — Handwritten or mixed content: Google Gemini Flash/Pro
+Existing options each failed in a specific way:
 
-### How to use
-1. Open https://multilingual-ocr-tool.streamlit.app
-2. Get a free Gemini API key at https://aistudio.google.com/apikey
-   - Only a Google account is required. No credit card needed.
-   - Free quota: ~1,500 requests/day, resets daily. Stops gracefully when exceeded — no automatic charges.
-   - Note: On the free tier, Google may use your inputs for model improvement. Use a paid account for confidential documents.
-3. Paste your key, upload PDF(s), click **Start Processing**, download `.txt` output
+- **Conventional OCR** (e.g. Tesseract) is pixel-and-dictionary based. It collapses on scribbled Traditional-Chinese handwriting.
+- **General AI chat tools** can read handwriting, but processing hundreds of pages one screenshot at a time is not a workflow.
+- **Many small online OCR sites** ask you to create an account, enter payment details, or upload sensitive files to an unknown server. For documents containing **real citizens' names, signatures, and opinions**, that trust cost is unacceptable — you often can't verify where the data goes or whether the payment page is safe.
 
-### Output
-Plain `.txt` files ready for NVivo, Atlas.ti, corpus analysis, or any text-based workflow.
+Glyph is the tool I wanted to exist: something that reads difficult Traditional-Chinese handwriting well, works in a browser without any installation, and asks for **verifiable trust, not blind trust**.
+
+---
+
+## What it does
+
+Upload one or more PDFs, paste a free API key, and download clean `.txt` output — with handwriting recognition as the primary strength, not an afterthought. Recognition is powered by **Google Gemini** (for handwriting and mixed content) and **Google Cloud Vision** (for printed text).
+
+The interface is deliberately **tool-first** (inspired by DeepL): a large upload box comes first, advanced options stay collapsed, and the core action is always one click away.
+
+Available in **English** and **繁體中文**, switchable in the top-right corner.
+
+---
+
+## How it works — a cost-ladder, not a classifier
+
+The central design decision: **don't try to guess what a file is — try the cheapest method first, and only escalate when needed.** Pre-classifying whether a page is "handwritten" is itself expensive and unreliable; a fallback ladder avoids that problem entirely.
+
+| Step | Method | When it's used | Cost |
+|------|--------|----------------|------|
+| 1 | **Native text extraction** (PyMuPDF) | Digital PDFs that already contain a text layer | **Free** — no API call |
+| 2 | **Google Cloud Vision** *(optional cost-saving mode)* | Bulk **printed** scans | ~1/10 the cost of Gemini |
+| 3 | **Google Gemini** (Flash / Pro) | **Handwritten** or mixed content, or when Cloud Vision quality is insufficient | Priced per token |
+
+Each engine is matched to the task it's genuinely best at — never overused, never underused.
+
+### The auto-navigation: a confidence-driven escalation
+
+When Cloud Vision is used, it returns a **confidence score** per page, and the app treats that score as a steering signal:
+
+- **High confidence** → the Cloud Vision result is used as-is (cheap and fast).
+- **Below the threshold** → the app flags it: *"this engine is optimized for printed text; handwriting accuracy may be lower — consider Gemini."*
+- **Lower still, and a Gemini key is provided** → the file is **automatically escalated to Gemini** for a better read.
+
+The result is a system that quietly routes each file toward the right engine on its own — cheapest-first, but never at the expense of a result the user can trust. **Why two OCR engines at all?** Because they fail differently: in testing, Cloud Vision silently dropped whole lines of handwriting that Gemini read correctly. The app doesn't hide that trade-off — it navigates around it.
+
+---
+
+## Design principles
+
+These are the decisions that shaped the product, and the reasoning behind each:
+
+**Verifiable trust, not blind trust.** The danger with unknown small tools isn't that they're small — it's that they're *black boxes*: they take your identity (sign-up), your money (payment), or your files (unknown server), and you can't check what happens next. Glyph inverts this. The code is **open-source and in this repository** — anyone can audit it. Files are processed **in memory and never stored**. Your API key is used **only within your browser session** to talk directly to Google, and is never sent to or logged by any server of mine. You don't have to take my word for any of this; you can read the code. And as a further safeguard, you can create a **restricted, disposable API key** and delete it right after use — so even in the worst case, exposure is bounded.
+
+**Bring your own key.** Instead of the developer paying for everyone's usage — unsustainable, and the reason many "free" tools eventually add paywalls or monetize data — each user supplies their own free Google API key. This is what keeps the tool genuinely free, private, and able to stay online indefinitely.
+
+**Honest cost transparency.** Every result shows processing time, token usage, and an estimated cost — labeled clearly as an estimate at standard paid rates, because a free-tier key within quota is typically not charged. Most tools hide this; showing it lets the user make informed decisions.
+
+**Fail gracefully, in plain language.** When something goes wrong — a free key that can't use Gemini Pro, a quota limit, a missing engine — the app shows a short human-readable message instead of a raw error dump.
+
+**Testing over assumptions.** Real testing (not code-reading) surfaced concrete bugs — a missing runtime dependency that disabled Cloud Vision, page-number and noise-removal rules that didn't fire on real OCR output. Each was reproduced with a minimal test before being fixed. Trusting "it should work" is how silent errors reach research data.
+
+---
+
+## Tech stack
+
+- **Python** + **Streamlit** — application and UI
+- **PyMuPDF** — native text-layer extraction
+- **Google Cloud Vision API** — printed-text OCR
+- **Google Gemini API** (Flash / Pro) — handwriting and mixed-content OCR
+- **opencc** — optional Traditional → Simplified conversion
+- **Streamlit Community Cloud** — hosting
+
+Built and iterated with **Claude Code** as an AI pair-programmer, in an *agentic-coding + context-engineering* workflow — the AI writes code, but every architectural decision, trade-off, test, and verification is driven and reviewed by hand. This is not "vibe coding": the durable engineering work is reading and auditing AI-generated code, catching structural errors, and exercising judgment about what to build.
+
+---
+
+## How to use
+
+1. Open **https://glyph-ocr.streamlit.app**
+2. Get a free Gemini API key at https://aistudio.google.com/apikey — a Google account is enough, no credit card needed.
+3. Upload your PDF(s), paste the key, click **Start Processing**, and download the `.txt` output.
+
+*(An optional advanced mode supports Google Cloud Vision for cheaper bulk printed-document processing. For sensitive material, consider using a restricted, disposable API key.)*
+
+---
+
+## Honest limitations
+
+- **Cloud Vision is weak on handwriting** — it is offered only as a cost-saver for printed documents; the app warns you when it may not be appropriate.
+- **Estimated cost is an estimate.** It's computed at standard paid API rates; your actual cost depends on your key's tier and quota.
+- **Severely illegible handwriting** may not be fully recoverable by any engine. Such cases are treated as a limitation of the source material — documented, not silently "corrected" by AI — to preserve research integrity.
+- **Free-tier hosting sleeps** after inactivity and needs a moment to wake.
+
+---
+
+## Project history
+
+- **v1** — `multilingual-ocr-tool.streamlit.app`, the first public milestone, preserved as-is.
+- **v2 (Glyph OCR)** — a full redesign: tool-first interface, bilingual UI, dual-engine cost ladder, confidence-driven escalation, transparent cost reporting, and graceful error handling.
+
+Below this point is the original Colab-based OCR pipeline and the research background that this app grew out of.
+
+---
 
 ### Disclaimer & Privacy
 - **Your files:** Uploaded files are processed in memory and deleted immediately after. They are never stored on any server controlled by this tool.
