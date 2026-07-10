@@ -111,7 +111,6 @@ Built and iterated with **Claude Code** as an AI pair-programmer, in an *agentic
 - **v1** — `multilingual-ocr-tool.streamlit.app`, the first public milestone, preserved as-is.
 - **v2 (Glyph OCR)** — a full redesign: tool-first interface, bilingual UI, dual-engine cost ladder, confidence-driven escalation, transparent cost reporting, and graceful error handling.
 
-Below this point is the original Colab-based OCR pipeline and the research background that this app grew out of.
 
 ---
 
@@ -130,6 +129,8 @@ If you use this tool in academic research, please acknowledge it in your methods
 
 ### About the developer
 **Wenxuan Shang** — B.A. Peking University; currently a graduate student at Waseda University. This tool was originally developed to process approximately 10,000 pages of Traditional Chinese Environmental Impact Assessment (EIA) documents (mixed printed and handwritten) for qualitative research. It is open-sourced for use by other researchers.
+
+Below this point is the original Colab-based OCR pipeline and the research background that this app grew out of.
 
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
